@@ -33,7 +33,9 @@ from gym import spaces
 
 from isaacgym import gymtorch, gymapi
 from isaacgym.torch_utils import to_torch
-from isaacgym.gymutil import get_property_setter_map, get_property_getter_map, get_default_setter_args, apply_random_samples, check_buckets, generate_random_samples
+
+from isaacgymenvs.utils.dr_utils import get_property_setter_map, get_property_getter_map, \
+    get_default_setter_args, apply_random_samples, check_buckets, generate_random_samples
 
 import torch
 import numpy as np
@@ -670,13 +672,32 @@ class VecTask(Env):
                     self.actor_params_generator.sample()
                 extern_offsets[env_id] = 0
 
+        # randomise all attributes of each actor (hand, cube etc..)
+        # actor_properties are (stiffness, damping etc..)
+
+        # Loop over actors, then loop over envs, then loop over their props 
+        # and lastly loop over the ranges of the params 
+
         for actor, actor_properties in dr_params["actor_params"].items():
+        
+            # Loop over all envs as this part is not tensorised yet 
             for env_id in env_ids:
+        
                 env = self.envs[env_id]
                 handle = self.gym.find_actor_handle(env, actor)
                 extern_sample = self.extern_actor_params[env_id]
 
+                # randomise dof_props, rigid_body, rigid_shape properties 
+                # all obtained from the YAML file
+                # EXAMPLE: prop name: dof_properties, rigid_body_properties, rigid_shape properties  
+                #          prop_attrs: 
+                #               {'damping': {'range': [0.3, 3.0], 'operation': 'scaling', 'distribution': 'loguniform'}
+                #               {'stiffness': {'range': [0.75, 1.5], 'operation': 'scaling', 'distribution': 'loguniform'}
+
                 for prop_name, prop_attrs in actor_properties.items():
+                   
+                   # These properties are to do with whole obj mesh related
+
                     if prop_name == 'color':
                         num_bodies = self.gym.get_actor_rigid_body_count(
                             env, handle)
@@ -684,6 +705,7 @@ class VecTask(Env):
                             self.gym.set_rigid_body_color(env, handle, n, gymapi.MESH_VISUAL,
                                                           gymapi.Vec3(random.uniform(0, 1), random.uniform(0, 1), random.uniform(0, 1)))
                         continue
+                   
                     if prop_name == 'scale':
                         setup_only = prop_attrs.get('setup_only', False)
                         if (setup_only and not self.sim_initialized) or not setup_only:
@@ -698,35 +720,90 @@ class VecTask(Env):
                             self.gym.set_actor_scale(env, handle, new_scale)
                         continue
 
+
+                    # Get the properties from the sim API 
+                    # prop_names is dof_properties, rigid_body_properties, rigid_shape_properties
+
                     prop = param_getters_map[prop_name](env, handle)
                     set_random_properties = True
+
+                    # if list it is likely to be 
+                    #  - rigid_body_properties
+                    #  - rigid_shape_properties 
+                    
                     if isinstance(prop, list):
+
+                        # Read the original values; remember that 
+                        # randomised_prop_val = original_prop_val <operator> random sample
+                    
                         if self.first_randomization:
                             self.original_props[prop_name] = [
                                 {attr: getattr(p, attr) for attr in dir(p)} for p in prop]
+                    
+                        # prop_name is rigid_body_properties or rigid_shape_properties
+                        # for all the links/bodies in the actor, we loop over them and randomise their properties 
+                        # e.g. in case of allegro hand prop is all those 16 links
+                        # and original_prop is their original masses and inertias and armatures set in the code or yaml file
+
+                        # Loop over all the rigid bodies of the actor and then the corresponding 
+                        # attribute ranges 
+
                         for p, og_p in zip(prop, self.original_props[prop_name]):
+                            
+                            # attrs:
+                            #   if rigid_body_properties, it is mass 
+                            #   if rigid_shape_properties it is friction etc.
+                            
                             for attr, attr_randomization_params in prop_attrs.items():
+
                                 setup_only = attr_randomization_params.get('setup_only', False)
                                 if (setup_only and not self.sim_initialized) or not setup_only:
                                     smpl = None
                                     if self.actor_params_generator is not None:
                                         smpl, extern_offsets[env_id] = get_attr_val_from_sample(
                                             extern_sample, extern_offsets[env_id], p, attr)
+
+                                    # generate the samples and add them to props 
+                                    # e.g. curr_prop is rigid_body_properties
+                                    #      attr is 'mass' (string)
+                                    #      mass_val = getattr(curr_prop, 'mass')
+                                    #      new_mass_val = mass_val <operator> sample
+                                    #      setattr(curr_prop, 'mass', new_mass_val)
+                                    
                                     apply_random_samples(
                                         p, og_p, attr, attr_randomization_params,
                                         self.last_step, smpl)
                                 else:
                                     set_random_properties = False
+
+                    # if it is not a list, it is likely an array 
+                    # which means it is for dof_properties                                     
+
                     else:
+                    
+                        # prop_name is e.g. dof_properties with corresponding meta-data
+                        
                         if self.first_randomization:
                             self.original_props[prop_name] = deepcopy(prop)
+                    
+                        
+                        # attrs is damping, stiffness etc.
+                        # attrs_randomisation_params is range, distr, schedule 
+                                                
                         for attr, attr_randomization_params in prop_attrs.items():
+
                             setup_only = attr_randomization_params.get('setup_only', False)
+
                             if (setup_only and not self.sim_initialized) or not setup_only:
+                            
                                 smpl = None
+                            
                                 if self.actor_params_generator is not None:
                                     smpl, extern_offsets[env_id] = get_attr_val_from_sample(
                                         extern_sample, extern_offsets[env_id], prop, attr)
+                            
+                                # generate random samples and add them to props
+                                # and we set the props back in sim later on
                                 apply_random_samples(
                                     prop, self.original_props[prop_name], attr,
                                     attr_randomization_params, self.last_step, smpl)
