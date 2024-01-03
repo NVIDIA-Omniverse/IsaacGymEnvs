@@ -74,10 +74,11 @@ class CommonAgent(a2c_continuous.A2CAgent):
 
         self.init_rnn_from_model(self.model)
         self.last_lr = float(self.last_lr)
+        self.seq_len = config['seq_len']
 
         self.optimizer = optim.Adam(self.model.parameters(), float(self.last_lr), eps=1e-08, weight_decay=self.weight_decay)
 
-        if self.has_central_value:
+        if self.has_central_value: 
             cv_config = {
                 'state_shape' : torch_ext.shape_whc_to_cwh(self.state_shape), 
                 'value_size' : self.value_size,
